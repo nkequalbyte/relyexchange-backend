@@ -1,5 +1,5 @@
 # Use Python base image
-FROM python:3.7
+FROM python:3.13
 
 RUN apt-get update && apt-get install -y libpq-dev
 
