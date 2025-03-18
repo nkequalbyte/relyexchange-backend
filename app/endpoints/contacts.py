@@ -338,4 +338,169 @@ def get_specific_contact(user_id, contact_id):
     except Exception as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
 
+@contacts_bp.route('/count/<user_id>', methods=['GET'])
+def get_user_contacts_count(user_id):
+    # Validate the user_id is a proper UUID
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        return jsonify({'error': 'Invalid user_id format. Must be a UUID.'}), 400
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Query to count contacts for the specific user_id
+        cur.execute("""
+            SELECT COUNT(*) as contact_count
+            FROM relyexchange.contacts
+            WHERE user_id = %s
+        """, (user_id,))
+        
+        contact_count = cur.fetchone()[0]
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify({'user_id': user_id, 'contact_count': contact_count}), 200
+        
+    except Exception as e:
+        return jsonify({'error': f'Database error: {str(e)}'}), 500
+
+@contacts_bp.route('/contacts/<user_id>', methods=['POST'])
+def add_contact(user_id):
+    # Validate the user_id is a proper UUID
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        return jsonify({'error': 'Invalid user_id format. Must be a UUID.'}), 400
+
+    # Validate request body
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No contact data provided'}), 400
+
+    # Define allowed fields
+    allowed_fields = {
+        'FirstName', 'LastName', 'Companies', 'Title', 'Emails', 'PhoneNumbers',
+        'Addresses', 'Sites', 'InstantMessageHandles', 'FullName', 'Birthday',
+        'Location', 'BookmarkedAt', 'Profiles'
+    }
     
+    # Check for invalid fields
+    invalid_fields = set(data.keys()) - allowed_fields
+    if invalid_fields:
+        return jsonify({'error': f'Invalid fields provided: {", ".join(invalid_fields)}'}), 400
+
+    # Process special fields
+    birthday = None
+    if 'Birthday' in data and data['Birthday']:
+        try:
+            birthday = datetime.strptime(data['Birthday'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'error': 'Birthday must be in YYYY-MM-DD format'}), 400
+
+    bookmarked_at = None
+    if 'BookmarkedAt' in data and data['BookmarkedAt']:
+        try:
+            bookmarked_at = datetime.strptime(data['BookmarkedAt'], '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            try:
+                bookmarked_at = datetime.strptime(data['BookmarkedAt'], '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'error': 'BookmarkedAt must be in YYYY-MM-DD HH:MM:SS or YYYY-MM-DD format'}), 400
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Check if the phone number already exists for the user
+        phone_number = data.get('PhoneNumbers')
+        if phone_number:
+            cur.execute("""
+                SELECT 1 FROM relyexchange.contacts 
+                WHERE user_id = %s AND PhoneNumbers = %s
+            """, (user_id, phone_number))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'error': 'Contact with this phone number already exists for the user.'}), 409
+
+        # Insert the new contact
+        insert_query = """
+            INSERT INTO relyexchange.contacts (
+                user_id, FirstName, LastName, Companies, Title, Emails, PhoneNumbers,
+                Addresses, Sites, InstantMessageHandles, FullName, Birthday, Location,
+                BookmarkedAt, Profiles
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+        """
+        cur.execute(insert_query, (
+            user_id,
+            data.get('FirstName'),
+            data.get('LastName'),
+            data.get('Companies'),
+            data.get('Title'),
+            data.get('Emails'),
+            data.get('PhoneNumbers'),
+            data.get('Addresses'),
+            data.get('Sites'),
+            data.get('InstantMessageHandles'),
+            data.get('FullName'),
+            birthday,
+            data.get('Location'),
+            bookmarked_at,
+            data.get('Profiles')
+        ))
+        
+        new_contact = cur.fetchone()
+        conn.commit()
+
+        # Convert the returned tuple to a dictionary
+        columns = [desc[0] for desc in cur.description]
+        new_contact_dict = dict(zip(columns, new_contact))
+
+        cur.close()
+        conn.close()
+
+        return jsonify({
+            'message': 'Contact added successfully',
+            'contact': new_contact_dict
+        }), 201
+
+    except Exception as e:
+        return jsonify({'error': f'Database error: {str(e)}'}), 500
+
+
+
+@contacts_bp.route('/search/<user_id>', methods=['GET'])
+def search_contacts(user_id):
+    search_term = request.args.get('q', '').strip()
+    if not search_term:
+        return jsonify({'error': 'Query parameter "q" is required.'}), 400
+
+    # Validate the user_id format
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        return jsonify({'error': 'Invalid user_id format. Must be a UUID.'}), 400
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        pattern = f'%{search_term}%'
+        query = """
+            SELECT * FROM relyexchange.contacts
+            WHERE user_id = %s AND (
+                FirstName ILIKE %s OR LastName ILIKE %s OR FullName ILIKE %s OR PhoneNumbers ILIKE %s
+            )
+        """
+        cur.execute(query, (user_id, pattern, pattern, pattern, pattern))
+        rows = cur.fetchall()
+        columns = [desc[0] for desc in cur.description]
+        results = [dict(zip(columns, row)) for row in rows]
+        cur.close()
+        conn.close()
+        return jsonify({'contacts': results, 'count': len(results)}), 200
+    except Exception as e:
+        return jsonify({'error': f'Database error: {str(e)}'}), 500
