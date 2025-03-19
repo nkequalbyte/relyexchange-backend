@@ -520,6 +520,19 @@ def filter_contacts(user_id):
     # Get optional filter parameters
     alphabet = request.args.get('alphabet', '').strip()  # e.g., "A"
     order = request.args.get('order', '').strip().lower()  # expected: "oldest" or "newest"
+    
+    # Get pagination parameters
+    page = request.args.get('page', default=1, type=int)
+    per_page = request.args.get('per_page', default=25, type=int)
+
+    # Validate pagination parameters
+    if page < 1:
+        return jsonify({'error': 'Page number must be greater than 0'}), 400
+    if per_page < 1 or per_page > 100:
+        return jsonify({'error': 'Per page must be between 1 and 100'}), 400
+
+    # Calculate offset for pagination
+    offset = (page - 1) * per_page
 
     # Validate alphabet parameter: must be a single letter a-z (case-insensitive) if provided
     if alphabet and not re.match("^[a-zA-Z]$", alphabet):
@@ -535,14 +548,13 @@ def filter_contacts(user_id):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Base query: fetch contacts for the given user_id
+        # Base query for counting total results
+        count_query = "SELECT COUNT(*) FROM relyexchange.contacts WHERE user_id = %s"
+        count_params = [user_id]
+
+        # Base query for fetching filtered results
         query = "SELECT * FROM relyexchange.contacts WHERE user_id = %s"
         params = [user_id]
-
-        # Apply alphabet filter if provided
-        # if alphabet:
-        #     query += " AND FullName ILIKE %s"
-        #     params.append(f"{alphabet}%")
 
         # Apply ordering based on parameters
         if alphabet and order:
@@ -564,14 +576,38 @@ def filter_contacts(user_id):
             # If no parameters provided, default to alphabetical order
             query += " ORDER BY FirstName ASC"
 
+        # Add pagination
+        query += " LIMIT %s OFFSET %s"
+        params.extend([per_page, offset])
+
+        # Get total count first
+        cur.execute(count_query, count_params)
+        total_contacts = cur.fetchone()[0]
+
+        # Execute the main query with pagination
         cur.execute(query, tuple(params))
         rows = cur.fetchall()
         columns = [desc[0] for desc in cur.description]
         contacts = [dict(zip(columns, row)) for row in rows]
 
+        # Calculate pagination metadata
+        total_pages = (total_contacts + per_page - 1) // per_page
+        pagination = {
+            'total': total_contacts,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': total_pages,
+            'has_next': page < total_pages,
+            'has_prev': page > 1
+        }
+
         cur.close()
         conn.close()
 
-        return jsonify({'contacts': contacts, 'count': len(contacts)}), 200
+        return jsonify({
+            'contacts': contacts,
+            'pagination': pagination,
+            'count': len(contacts)
+        }), 200
     except Exception as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
