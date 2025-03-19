@@ -6,6 +6,7 @@ from datetime import datetime
 import psycopg2
 from psycopg2.extras import execute_values
 from app.config import Config
+import re
 
 contacts_bp = Blueprint('contacts', __name__)
 
@@ -502,5 +503,75 @@ def search_contacts(user_id):
         cur.close()
         conn.close()
         return jsonify({'contacts': results, 'count': len(results)}), 200
+    except Exception as e:
+        return jsonify({'error': f'Database error: {str(e)}'}), 500
+
+
+
+# New Filter Endpoint with selective query, createdat ordering, and alphabet validation
+@contacts_bp.route('/filter/<user_id>', methods=['GET'])
+def filter_contacts(user_id):
+    # Validate user_id
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        return jsonify({'error': 'Invalid user_id format. Must be a UUID.'}), 400
+
+    # Get optional filter parameters
+    alphabet = request.args.get('alphabet', '').strip()  # e.g., "A"
+    order = request.args.get('order', '').strip().lower()  # expected: "oldest" or "newest"
+
+    # Validate alphabet parameter: must be a single letter a-z (case-insensitive) if provided
+    if alphabet and not re.match("^[a-zA-Z]$", alphabet):
+        return jsonify({'error': 'Alphabet filter must be a single letter (a-z or A-Z).'}), 400
+
+    # Check that order is not a combination of values and validate its value
+    if order and ',' in order:
+        return jsonify({'error': 'Cannot combine "oldest" and "newest" order parameters.'}), 400
+    if order and order not in ['oldest', 'newest']:
+        return jsonify({'error': 'Invalid order parameter. Allowed values are "oldest" or "newest".'}), 400
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Base query: fetch contacts for the given user_id
+        query = "SELECT * FROM relyexchange.contacts WHERE user_id = %s"
+        params = [user_id]
+
+        # Apply alphabet filter if provided
+        # if alphabet:
+        #     query += " AND FullName ILIKE %s"
+        #     params.append(f"{alphabet}%")
+
+        # Apply ordering based on parameters
+        if alphabet and order:
+            # If both parameters are present, first filter by alphabet then order by createdat
+            if order == "oldest":
+                query += " ORDER BY createdat ASC"
+            else:  # newest
+                query += " ORDER BY createdat DESC"
+        elif alphabet:
+            # If only alphabet parameter is present, order alphabetically
+            query += " ORDER BY FirstName ASC"
+        elif order:
+            # If only order parameter is present, order by createdat
+            if order == "oldest":
+                query += " ORDER BY createdat ASC"
+            else:  # newest
+                query += " ORDER BY createdat DESC"
+        else:
+            # If no parameters provided, default to alphabetical order
+            query += " ORDER BY FirstName ASC"
+
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
+        columns = [desc[0] for desc in cur.description]
+        contacts = [dict(zip(columns, row)) for row in rows]
+
+        cur.close()
+        conn.close()
+
+        return jsonify({'contacts': contacts, 'count': len(contacts)}), 200
     except Exception as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
