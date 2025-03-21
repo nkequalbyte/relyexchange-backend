@@ -55,3 +55,33 @@ def get_user_by_uuid(user_id):
         
     except Exception as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
+
+@users_bp.route('/email/<email>', methods=['GET'])
+def get_user_by_email(email):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Get the specific user by email
+        cur.execute("""
+            SELECT * FROM relyexchange.users 
+            WHERE email = %s
+        """, (email,))
+        
+        row = cur.fetchone()
+        
+        if not row:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Get column names from the cursor description
+        columns = [desc[0] for desc in cur.description]
+        # Create a dictionary representing the user
+        user = dict(zip(columns, row))
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify({'user': user}), 200
+        
+    except Exception as e:
+        return jsonify({'error': f'Database error: {str(e)}'}), 500
