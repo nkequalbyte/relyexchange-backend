@@ -506,9 +506,6 @@ def search_contacts(user_id):
     except Exception as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
 
-
-
-# New Filter Endpoint with selective query, createdat ordering, and alphabet validation
 @contacts_bp.route('/filter/<user_id>', methods=['GET'])
 def filter_contacts(user_id):
     # Validate user_id
@@ -517,9 +514,8 @@ def filter_contacts(user_id):
     except ValueError:
         return jsonify({'error': 'Invalid user_id format. Must be a UUID.'}), 400
 
-    # Get optional filter parameters
-    alphabet = request.args.get('alphabet', '').strip()  # e.g., "A"
-    order = request.args.get('order', '').strip().lower()  # expected: "oldest" or "newest"
+    # Get filter parameters
+    order = request.args.get('order', 'alphabet').strip().lower()  # default to 'alphabet'
     
     # Get pagination parameters
     page = request.args.get('page', default=1, type=int)
@@ -531,49 +527,28 @@ def filter_contacts(user_id):
     if per_page < 1 or per_page > 100:
         return jsonify({'error': 'Per page must be between 1 and 100'}), 400
 
+    # Validate order parameter
+    if order not in ['oldest', 'newest', 'alphabet']:
+        return jsonify({'error': 'Invalid order parameter. Allowed values are "oldest", "newest", or "alphabet"'}), 400
+
     # Calculate offset for pagination
     offset = (page - 1) * per_page
-
-    # Validate alphabet parameter: must be a single letter a-z (case-insensitive) if provided
-    if alphabet and not re.match("^[a-zA-Z]$", alphabet):
-        return jsonify({'error': 'Alphabet filter must be a single letter (a-z or A-Z).'}), 400
-
-    # Check that order is not a combination of values and validate its value
-    if order and ',' in order:
-        return jsonify({'error': 'Cannot combine "oldest" and "newest" order parameters.'}), 400
-    if order and order not in ['oldest', 'newest']:
-        return jsonify({'error': 'Invalid order parameter. Allowed values are "oldest" or "newest".'}), 400
 
     try:
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Base query for counting total results
+        # Base queries
         count_query = "SELECT COUNT(*) FROM relyexchange.contacts WHERE user_id = %s"
-        count_params = [user_id]
-
-        # Base query for fetching filtered results
         query = "SELECT * FROM relyexchange.contacts WHERE user_id = %s"
         params = [user_id]
 
-        # Apply ordering based on parameters
-        if alphabet and order:
-            # If both parameters are present, first filter by alphabet then order by createdat
-            if order == "oldest":
-                query += " ORDER BY createdat ASC"
-            else:  # newest
-                query += " ORDER BY createdat DESC"
-        elif alphabet:
-            # If only alphabet parameter is present, order alphabetically
-            query += " ORDER BY FirstName ASC"
-        elif order:
-            # If only order parameter is present, order by createdat
-            if order == "oldest":
-                query += " ORDER BY createdat ASC"
-            else:  # newest
-                query += " ORDER BY createdat DESC"
-        else:
-            # If no parameters provided, default to alphabetical order
+        # Apply ordering based on parameter
+        if order == 'oldest':
+            query += " ORDER BY createdat ASC"
+        elif order == 'newest':
+            query += " ORDER BY createdat DESC"
+        else:  # alphabet
             query += " ORDER BY FirstName ASC"
 
         # Add pagination
@@ -581,7 +556,7 @@ def filter_contacts(user_id):
         params.extend([per_page, offset])
 
         # Get total count first
-        cur.execute(count_query, count_params)
+        cur.execute(count_query, [user_id])
         total_contacts = cur.fetchone()[0]
 
         # Execute the main query with pagination
@@ -607,7 +582,8 @@ def filter_contacts(user_id):
         return jsonify({
             'contacts': contacts,
             'pagination': pagination,
-            'count': len(contacts)
+            'count': len(contacts),
+            'order': order
         }), 200
     except Exception as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
