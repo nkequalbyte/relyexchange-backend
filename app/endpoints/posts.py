@@ -75,10 +75,10 @@ def create_post(user_id):
 
         # Process mentions
         for mention in mentions:
-            try:
-                uuid.UUID(mention)
-            except ValueError:
-                return jsonify({'error': f'Invalid mention id format: {mention}'}), 400
+            # try:
+            #     uuid.UUID(mention)
+            # except ValueError:
+            #     return jsonify({'error': f'Invalid mention id format: {mention}'}), 400
 
             if is_registered_user(mention, cur):
                 # Registered user: store in mentioned_user_id column.
@@ -99,10 +99,10 @@ def create_post(user_id):
 
         # Process shares
         for share in shares:
-            try:
-                uuid.UUID(share)
-            except ValueError:
-                return jsonify({'error': f'Invalid share id format: {share}'}), 400
+            # try:
+            #     uuid.UUID(share)
+            # except ValueError:
+            #     return jsonify({'error': f'Invalid share id format: {share}'}), 400
 
             if is_registered_user(share, cur):
                 cur.execute("""
