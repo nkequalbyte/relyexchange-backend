@@ -587,3 +587,43 @@ def filter_contacts(user_id):
         }), 200
     except Exception as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
+
+@contacts_bp.route('/allcontacts/<user_id>', methods=['GET'])
+def get_simple_contacts(user_id):
+    # Validate the user_id is a proper UUID
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        return jsonify({'error': 'Invalid user_id format. Must be a UUID.'}), 400
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Query to get only id, name, and phone number
+        cur.execute("""
+            SELECT id, FirstName, LastName, PhoneNumbers
+            FROM relyexchange.contacts 
+            WHERE user_id = %s 
+            ORDER BY FirstName, LastName
+        """, (user_id,))
+        
+        rows = cur.fetchall()
+        
+        # Create a list of simplified contact information
+        simple_contacts = [{
+            'id': row[0],
+            'name': f"{row[1] or ''} {row[2] or ''}".strip(),
+            'phone_number': row[3]
+        } for row in rows]
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            'contacts': simple_contacts,
+            'count': len(simple_contacts)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': f'Database error: {str(e)}'}), 500
