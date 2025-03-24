@@ -20,15 +20,111 @@ def get_db_connection():
     )
     return conn
 
-# Define required columns for CSV
-REQUIRED_COLUMNS = [
-    'FirstName', 'LastName', 'Companies', 'Title', 'Emails', 'PhoneNumbers',
-    'Addresses', 'Sites', 'InstantMessageHandles', 'FullName', 'Birthday',
-    'Location', 'BookmarkedAt', 'Profiles'
-]
+# Parser for contacts.csv – URL is not provided, so set to None.
+def parse_contacts_csv(reader, user_id):
+    """
+    Parses a 'contacts.csv' file. Expects columns like:
+      FirstName, LastName, Companies, Title, Emails, PhoneNumbers,
+      Addresses, Sites, InstantMessageHandles, FullName, Birthday,
+      Location, BookmarkedAt, Profiles
+    Returns a list of tuples ready for bulk insertion.
+    The tuple structure now includes an extra field for URL.
+    """
+    records = []
+    for row in reader:
+        # Parse 'Birthday'
+        birthday = None
+        if row.get('Birthday'):
+            try:
+                birthday = datetime.strptime(row.get('Birthday'), '%Y-%m-%d').date()
+            except ValueError:
+                pass
+
+        # Parse 'BookmarkedAt'
+        bookmarked_at = None
+        if row.get('BookmarkedAt'):
+            for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                try:
+                    bookmarked_at = datetime.strptime(row.get('BookmarkedAt'), fmt)
+                    break
+                except ValueError:
+                    continue
+
+        record = (
+            user_id,
+            row.get('FirstName'),
+            row.get('LastName'),
+            row.get('Companies'),
+            row.get('Title'),
+            row.get('Emails'),
+            row.get('PhoneNumbers'),
+            row.get('Addresses'),
+            row.get('Sites'),
+            row.get('InstantMessageHandles'),
+            row.get('FullName'),
+            birthday,
+            row.get('Location'),
+            bookmarked_at,
+            row.get('Profiles'),
+            None   # ConnectedAt: not applicable for contacts.csv
+            , None # URL: not provided in contacts.csv
+        )
+        records.append(record)
+    return records
+
+# Parser for connections.csv – maps columns from connections CSV including URL.
+def parse_connections_csv(reader, user_id):
+    """
+    Parses a 'connections.csv' file.
+    Suppose it has columns like:
+      First Name, Last Name, Email Address, Company, Position, Connected On, URL, ...
+    We'll map them into our contacts table.
+    """
+    records = []
+    for row in reader:
+        # Parse 'Connected On'
+        connected_at = None
+        if row.get('Connected On'):
+            for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                try:
+                    connected_at = datetime.strptime(row.get('Connected On'), fmt)
+                    break
+                except ValueError:
+                    continue
+
+        # Get the URL from the CSV. Adjust the key if needed.
+        url = row.get('URL')
+        record = (
+            user_id,
+            row.get('First Name'),          # FirstName
+            row.get('Last Name'),           # LastName
+            row.get('Company'),             # Companies
+            row.get('Position'),            # Title
+            row.get('Email Address'),       # Emails
+            None,                           # PhoneNumbers (if not provided)
+            None,                           # Addresses
+            None,                           # Sites
+            None,                           # InstantMessageHandles
+            f"{row.get('First Name','')} {row.get('Last Name','')}".strip(),  # FullName
+            None,                           # Birthday
+            None,                           # Location
+            None,                           # BookmarkedAt
+            None,                           # Profiles
+            connected_at,                   # ConnectedAt
+            url                             # URL from connections.csv
+        )
+        records.append(record)
+    return records
 
 @contacts_bp.route('/upload/<user_id>', methods=['POST'])
 def upload_csv(user_id):
+    """
+    Upload a CSV file that could be either a contacts CSV or a connections CSV.
+    The file type is detected by inspecting the CSV header.
+    This version performs duplicate checking based on PhoneNumbers for contacts
+    and URL for connections.
+    """
+    # Validate user_id
     try:
         uuid.UUID(user_id)
     except ValueError:
@@ -50,57 +146,32 @@ def upload_csv(user_id):
         return jsonify({'error': f'Error reading file: {str(e)}'}), 400
 
     reader = csv.DictReader(file_stream)
-    header = reader.fieldnames
-    missing_columns = [col for col in REQUIRED_COLUMNS if col not in header]
-    if missing_columns:
-        return jsonify({'error': f'Missing required columns: {", ".join(missing_columns)}'}), 400
+    if not reader.fieldnames:
+        return jsonify({'error': 'CSV file is empty or missing header row.'}), 400
 
-    records = []
-    for row in reader:
-        birthday = None
-        if row.get('Birthday'):
-            try:
-                birthday = datetime.strptime(row.get('Birthday'), '%Y-%m-%d').date()
-            except ValueError:
-                pass
+    # Normalize header names to lower case and strip whitespace
+    normalized_header = {col.strip().lower() for col in reader.fieldnames}
 
-        bookmarked_at = None
-        if row.get('BookmarkedAt'):
-            try:
-                bookmarked_at = datetime.strptime(row.get('BookmarkedAt'), '%Y-%m-%d %H:%M:%S')
-            except ValueError:
-                try:
-                    bookmarked_at = datetime.strptime(row.get('BookmarkedAt'), '%Y-%m-%d')
-                except ValueError:
-                    pass
-
-        record = (
-            user_id,
-            row.get('FirstName'),
-            row.get('LastName'),
-            row.get('Companies'),
-            row.get('Title'),
-            row.get('Emails'),
-            row.get('PhoneNumbers'),
-            row.get('Addresses'),
-            row.get('Sites'),
-            row.get('InstantMessageHandles'),
-            row.get('FullName'),
-            birthday,
-            row.get('Location'),
-            bookmarked_at,
-            row.get('Profiles'),
-        )
-        records.append(record)
+    # Decide parser based on header content.
+    # Here we assume that if the header contains a "url" column, it's a connections CSV.
+    if 'url' in normalized_header:
+        csv_type = 'connections'
+        records = parse_connections_csv(reader, user_id)
+    elif 'firstname' in normalized_header or 'first name' in normalized_header:
+        csv_type = 'contacts'
+        records = parse_contacts_csv(reader, user_id)
+    else:
+        return jsonify({'error': 'Unrecognized CSV format.'}), 400
 
     if not records:
         return jsonify({'error': 'No data found in CSV file.'}), 400
 
+    # Build the INSERT query. Now includes URL column.
     insert_query = """
         INSERT INTO relyexchange.contacts (
             user_id, FirstName, LastName, Companies, Title, Emails, PhoneNumbers,
             Addresses, Sites, InstantMessageHandles, FullName, Birthday, Location,
-            BookmarkedAt, Profiles
+            BookmarkedAt, Profiles, ConnectedAt, URL
         )
         VALUES %s
     """
@@ -109,15 +180,21 @@ def upload_csv(user_id):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Check for existing contacts for the given user_id
-        cur.execute("SELECT PhoneNumbers FROM relyexchange.contacts WHERE user_id = %s", (user_id,))
-        existing_records = cur.fetchall()
-
-        if existing_records:
+        # Duplicate Check:
+        # For contacts CSV, check by PhoneNumbers.
+        # For connections CSV, check by URL.
+        if csv_type == 'connections':
+            # Fetch existing URLs for the user.
+            cur.execute("SELECT URL FROM relyexchange.contacts WHERE user_id = %s", (user_id,))
+            existing_records = cur.fetchall()
+            existing_urls = {rec[0] for rec in existing_records if rec[0]}
+            new_records = [r for r in records if r[16] and r[16] not in existing_urls]
+        else:
+            # For contacts CSV, use PhoneNumbers duplicate check.
+            cur.execute("SELECT PhoneNumbers FROM relyexchange.contacts WHERE user_id = %s", (user_id,))
+            existing_records = cur.fetchall()
             existing_numbers = {rec[0] for rec in existing_records if rec[0]}
             new_records = [r for r in records if r[6] and r[6] not in existing_numbers]
-        else:
-            new_records = records
 
         if not new_records:
             cur.close()
@@ -126,11 +203,120 @@ def upload_csv(user_id):
 
         execute_values(cur, insert_query, new_records)
         conn.commit()
+        inserted_count = len(new_records)
         cur.close()
         conn.close()
-        return jsonify({'message': f'Successfully inserted {len(new_records)} contacts.'}), 201
+        return jsonify({'message': f'Successfully inserted {inserted_count} contacts.'}), 201
+
     except Exception as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
+
+
+
+# @contacts_bp.route('/upload/<user_id>', methods=['POST'])
+# def upload_csv(user_id):
+#     try:
+#         uuid.UUID(user_id)
+#     except ValueError:
+#         return jsonify({'error': 'Invalid user_id format. Must be a UUID.'}), 400
+
+#     if 'contact' not in request.files:
+#         return jsonify({'error': 'No file part in the request.'}), 400
+
+#     file = request.files['contact']
+#     if file.filename == '':
+#         return jsonify({'error': 'No file selected for uploading.'}), 400
+
+#     if not file.filename.endswith('.csv'):
+#         return jsonify({'error': 'File is not a CSV file.'}), 400
+
+#     try:
+#         file_stream = StringIO(file.stream.read().decode("UTF8"), newline=None)
+#     except Exception as e:
+#         return jsonify({'error': f'Error reading file: {str(e)}'}), 400
+
+#     reader = csv.DictReader(file_stream)
+#     header = reader.fieldnames
+#     missing_columns = [col for col in REQUIRED_COLUMNS if col not in header]
+#     if missing_columns:
+#         return jsonify({'error': f'Missing required columns: {", ".join(missing_columns)}'}), 400
+
+#     records = []
+#     for row in reader:
+#         birthday = None
+#         if row.get('Birthday'):
+#             try:
+#                 birthday = datetime.strptime(row.get('Birthday'), '%Y-%m-%d').date()
+#             except ValueError:
+#                 pass
+
+#         bookmarked_at = None
+#         if row.get('BookmarkedAt'):
+#             try:
+#                 bookmarked_at = datetime.strptime(row.get('BookmarkedAt'), '%Y-%m-%d %H:%M:%S')
+#             except ValueError:
+#                 try:
+#                     bookmarked_at = datetime.strptime(row.get('BookmarkedAt'), '%Y-%m-%d')
+#                 except ValueError:
+#                     pass
+
+#         record = (
+#             user_id,
+#             row.get('FirstName'),
+#             row.get('LastName'),
+#             row.get('Companies'),
+#             row.get('Title'),
+#             row.get('Emails'),
+#             row.get('PhoneNumbers'),
+#             row.get('Addresses'),
+#             row.get('Sites'),
+#             row.get('InstantMessageHandles'),
+#             row.get('FullName'),
+#             birthday,
+#             row.get('Location'),
+#             bookmarked_at,
+#             row.get('Profiles'),
+#         )
+#         records.append(record)
+
+#     if not records:
+#         return jsonify({'error': 'No data found in CSV file.'}), 400
+
+#     insert_query = """
+#         INSERT INTO relyexchange.contacts (
+#             user_id, FirstName, LastName, Companies, Title, Emails, PhoneNumbers,
+#             Addresses, Sites, InstantMessageHandles, FullName, Birthday, Location,
+#             BookmarkedAt, Profiles
+#         )
+#         VALUES %s
+#     """
+
+#     try:
+#         conn = get_db_connection()
+#         cur = conn.cursor()
+
+#         # Check for existing contacts for the given user_id
+#         cur.execute("SELECT PhoneNumbers FROM relyexchange.contacts WHERE user_id = %s", (user_id,))
+#         existing_records = cur.fetchall()
+
+#         if existing_records:
+#             existing_numbers = {rec[0] for rec in existing_records if rec[0]}
+#             new_records = [r for r in records if r[6] and r[6] not in existing_numbers]
+#         else:
+#             new_records = records
+
+#         if not new_records:
+#             cur.close()
+#             conn.close()
+#             return jsonify({'message': 'No new contacts to insert.'}), 200
+
+#         execute_values(cur, insert_query, new_records)
+#         conn.commit()
+#         cur.close()
+#         conn.close()
+#         return jsonify({'message': f'Successfully inserted {len(new_records)} contacts.'}), 201
+#     except Exception as e:
+#         return jsonify({'error': f'Database error: {str(e)}'}), 500
 
 @contacts_bp.route('/<user_id>', methods=['GET'])
 def get_contact(user_id):
