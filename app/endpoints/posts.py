@@ -42,6 +42,8 @@ def is_contact_of_user(contact_id, owner_id, cur):
     return cur.fetchone()
 
 # --- Supabase Storage / S3 configuration ---
+
+print(Config.S3_URL)
 s3_url = Config.S3_URL 
 access_key = Config.S3_ACCESS_KEY 
 secret_key = Config.S3_SECRET_KEY
@@ -97,27 +99,29 @@ def create_post(user_id):
         ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
         if ext not in allowed_extensions:
             return jsonify({'error': 'Invalid file type. Allowed types: mp3, jpeg, jpg, png, txt'}), 400
-
-        content = request.form.get('content', '')
-        try:
-            mentions = json.loads(request.form.get('mentions', '[]'))
-            shares = json.loads(request.form.get('shares', '[]'))
-        except json.JSONDecodeError:
-            return jsonify({'error': 'Invalid JSON format for mentions or shares'}), 400
-
+        
         bucket_name_supabase = "relyexchange"
         folder_name = "voicenotes"
         file_url = upload_file_to_supabase(bucket_name_supabase, file, folder_name, filename)
-    else:
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No data provided'}), 400
-        content = data.get('content')
-        if content is None:
-            return jsonify({'error': 'content is required'}), 400
-        mentions = data.get('mentions', [])
-        shares = data.get('shares', [])
-        file_url = None
+
+    content = request.form.get('content', '')
+    try:
+        mentions = json.loads(request.form.get('mentions', '[]'))
+        shares = json.loads(request.form.get('shares', '[]'))
+    except json.JSONDecodeError:
+        return jsonify({'error': 'Invalid JSON format for mentions or shares'}), 400
+
+        
+    # else:
+    #     data = request.get_json()
+    #     if not data:
+    #         return jsonify({'error': 'No data provided'}), 400
+    #     content = data.get('content')
+    #     if content is None:
+    #         return jsonify({'error': 'content is required'}), 400
+    #     mentions = data.get('mentions', [])
+    #     shares = data.get('shares', [])
+    #     file_url = None
 
     try:
         conn = get_db_connection()
