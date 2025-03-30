@@ -80,3 +80,4 @@ venv.bak/
 .DS_Store
 Thumbs.db
 ehthumbs.db
+tests_or_dump_file/
