@@ -71,6 +71,42 @@ def upload_file_to_supabase(bucket_name, file_obj, folder_name, file_name):
         print("Credentials not available.")
         return None
 
+
+def convert_to_presigned_url(url, bucket, expires_in=3600):
+    """
+    Convert a stored S3 URL to a presigned URL.
+    
+    Parameters:
+      url (str): The original S3 URL.
+      bucket (str): The name of the S3 bucket.
+      expires_in (int): Time in seconds for the presigned URL to remain valid.
+    
+    Returns:
+      str: A presigned URL if url is not None and the object key can be determined; otherwise, the original URL or None.
+    """
+    if not url:
+        return None
+
+    try:
+        # Assume the URL is formatted as: <endpoint_url>/<bucket>/<object_key>
+        parts = url.split(f"/{bucket}/")
+        if len(parts) < 2:
+            # If the URL doesn't match our expected format, return it unchanged.
+            return url
+        
+        object_key = parts[-1]
+        # Generate a presigned URL using the globally configured s3_client.
+        presigned_url = s3_client.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": bucket, "Key": object_key},
+            ExpiresIn=expires_in
+        )
+        return presigned_url
+    except Exception as e:
+        print(f"Error generating presigned URL: {e}")
+        return url
+
+
 @posts_bp.route('/posts/<user_id>', methods=['POST'])
 def create_post(user_id):
     """
@@ -306,12 +342,13 @@ def get_post(post_id):
 
         cur.close()
         conn.close()
-
+        attachment_url = post[3]
+        presigned_url = convert_to_presigned_url(attachment_url, bucket="relyexchange", expires_in=3600)
         post_data = {
             'post_id': post[0],
             'user_id': post[1],
             'content': post[2],
-            'attachment_url': post[3],
+            'attachment_url': presigned_url,
             'created_at': post[4],
             'mentions': mentions,
             'shares': shares,
@@ -558,11 +595,13 @@ def get_posts_by_user(user_id):
                     'content': cm[4],
                     'created_at': cm[5]
                 })
+            attachment_url = row[3]
+            presigned_url = convert_to_presigned_url(attachment_url, bucket="relyexchange", expires_in=3600)
             posts.append({
                 'post_id': row[0],
                 'user_id': row[1],
                 'content': row[2],
-                'attachment_url': row[3],
+                'attachment_url': presigned_url,
                 'created_at': row[4],
                 'mentions': mentions,
                 'shares': shares,
